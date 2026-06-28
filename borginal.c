@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+
 // --- CROSS-PLATFORM SLEEP CONFIGURATION ---
 #ifdef _WIN32
 #include <windows.h>
@@ -16,6 +17,11 @@
 #define MAP_HEIGHT 10
 #define ENEMY_POOL_SIZE 3
 
+// --- STRING COLORS ---
+#define RED "\x1B[31m"
+#define GRN "\x1B[32m"
+#define RESET "\x1B[0m"
+#define YEL "\x1B[33m"
 // --- STRUCTURES (DATA MODELS) ---
 // PLAYER
 typedef struct {
@@ -52,9 +58,9 @@ Character player1;  // Tracks global state of the user character
 Enemy active_enemy; // Stores state of the single active combat opponent
 
 // Fixed database of spawnable templates
-EnemyTemplate enemy_pool[ENEMY_POOL_SIZE] = {
-    {"Goblin", 'G', 15, 3}, {"Orc", 'O', 35, 7}, {"Skeleton", 'S', 20, 4}};
-
+EnemyTemplate enemy_pool[ENEMY_POOL_SIZE] = {{"Goblin", 'G', 15, 3, 0, 1},
+                                             {"Orc", 'O', 35, 7, 0, 1},
+                                             {"Skeleton", 'S', 20, 4, 0, 1}};
 // --- UTILITY FUNCTIONS ---
 
 // Clears terminal buffer depending on OS platform
@@ -70,6 +76,7 @@ void clear_screen() {
 int calculate_damage(Character player) {
   return player.strength + (rand() % 5);
 }
+
 int calculate_enemy_damage(Enemy enemy) {
   return enemy.template.dmg + enemy.template.rank + enemy.template.level +
          (rand() % 5);
@@ -80,12 +87,7 @@ int calculate_enemy_damage(Enemy enemy) {
 
 //  Gotta fix it!
 
-// Executes turn-based combat loop until enemy dies or player flees
-void in_fight(char *name, char symbol, int hp, int x, int y, int strength) {
-  clear_screen();
-  printf("%s has attacked you!\n", name);
-  sleep_ms(1000);
-
+void in_fight(char *name, char symbol, int *hp, int x, int y, int strength) {
   int max_hp = active_enemy.template.hp;
   char choice;
   int bar_width = 10; // Total text character length of UI bar
@@ -93,10 +95,9 @@ void in_fight(char *name, char symbol, int hp, int x, int y, int strength) {
   const char *empty = "----------";
 
   while (1) {
-    clear_screen();
 
     // 1. Calculate Enemy HP Bar
-    int enemy_segments = (int)(((float)hp / max_hp) * bar_width);
+    int enemy_segments = (int)(((float)*hp / max_hp) * bar_width);
     if (enemy_segments < 0)
       enemy_segments = 0;
     if (enemy_segments > bar_width)
@@ -112,18 +113,18 @@ void in_fight(char *name, char symbol, int hp, int x, int y, int strength) {
 
     // --- RENDER UI ---
     // Enemy UI
-    printf("\nEnemy: %s (%c)\n", name, symbol);
+    printf(RED "Enemy: %s" RESET "\n", name);
     printf("HP: [%.*s%.*s] %d/%d\n", enemy_segments, filling,
-           bar_width - enemy_segments, empty, hp, max_hp);
+           bar_width - enemy_segments, empty, *hp, max_hp);
 
     printf("---------------------\n"); // Separator
 
     // Player UI (Always visible below)
-    printf("Player: %s\n", player1.name);
+    printf(GRN "Player: %s\n" RESET, player1.name);
     printf("HP: [%.*s%.*s] %d/%d\n\n", player_segments, filling,
            bar_width - player_segments, empty, player1.hp, player1.max_hp);
 
-    printf("1. Attack\n2. Run\nChoose action: ");
+    printf(YEL "1. Attack\n2. Run\n" RESET);
 
     choice = get_keypress();
 
@@ -131,7 +132,7 @@ void in_fight(char *name, char symbol, int hp, int x, int y, int strength) {
       int dmg = calculate_damage(player1);
       int enemy_dmg = calculate_enemy_damage(active_enemy);
 
-      hp -= dmg;
+      *hp -= dmg;
       player1.hp -= enemy_dmg;
 
       clear_screen();
@@ -145,7 +146,7 @@ void in_fight(char *name, char symbol, int hp, int x, int y, int strength) {
         sleep_ms(2000);
         break;
       }
-      if (hp <= 0) {
+      if (*hp <= 0) {
         active_enemy.active = 0;
         clear_screen();
         printf("You defeated the %s!\n", name);
@@ -199,10 +200,10 @@ void random_event(int *n_tiles, int player_x, int player_y, int strength) {
 // TODO: Make the map bigger (should be 10kx10k with zones, should think
 // over it)
 // TODO: Show player stats in UI and xp bar
+// --- GAME LOOP AND MAP RENDER ---
 void map(Character *player) {
   char input;
-  int n_tiles =
-      1; // Tracks total spaces navigated (currently unused internally)
+  int n_tiles = 1;
 
   while (1) {
     clear_screen();
@@ -211,14 +212,12 @@ void map(Character *player) {
     for (int y = MAP_HEIGHT - 1; y >= 0; y--) {
       for (int x = 0; x < MAP_WIDTH; x++) {
         if (x == player->x && y == player->y) {
-          printf("P "); // Renders player pointer position
+          printf("P ");
         } else if (active_enemy.active && x == active_enemy.x &&
                    y == active_enemy.y) {
-          printf(
-              "%c ",
-              active_enemy.template.symbol); // Renders enemy symbol if active
+          printf("%c ", active_enemy.template.symbol);
         } else {
-          printf(". "); // Renders ambient coordinate space
+          printf(". ");
         }
       }
       printf("\n");
@@ -227,36 +226,62 @@ void map(Character *player) {
 
     input = get_keypress();
 
-    // Coordinate validation boundaries prevent player index overflow
-    // out-of-bounds
-    if ((input == 'w' || input == 'W') && player->y < MAP_HEIGHT - 1) {
-      player->y += 1;
-      n_tiles++;
-      random_event(&n_tiles, player->x, player->y, player->strength);
-    } else if ((input == 's' || input == 'S') && player->y > 0) {
-      player->y -= 1;
-      n_tiles++;
-      random_event(&n_tiles, player->x, player->y, player->strength);
-    } else if ((input == 'a' || input == 'A') && player->x > 0) {
-      player->x -= 1;
-      n_tiles++;
-      random_event(&n_tiles, player->x, player->y, player->strength);
-    } else if ((input == 'd' || input == 'D') && player->x < MAP_WIDTH - 1) {
-      player->x += 1;
-      n_tiles++;
-      random_event(&n_tiles, player->x, player->y, player->strength);
-    } else if (input == 'q' || input == 'Q') {
-      return; // Returns to main program block execution sequence
+    switch (input) {
+    case 'w':
+    case 'W':
+      if (player->y < MAP_HEIGHT - 1) {
+        player->y += 1;
+        n_tiles++;
+        random_event(&n_tiles, player->x, player->y, player->strength);
+      }
+      break;
+    case 's':
+    case 'S':
+      if (player->y > 0) {
+        player->y -= 1;
+        n_tiles++;
+        random_event(&n_tiles, player->x, player->y, player->strength);
+      }
+      break;
+    case 'a':
+    case 'A':
+      if (player->x > 0) {
+        player->x -= 1;
+        n_tiles++;
+        random_event(&n_tiles, player->x, player->y, player->strength);
+      }
+      break;
+    case 'd':
+    case 'D':
+      if (player->x < MAP_WIDTH - 1) {
+        player->x += 1;
+        n_tiles++;
+        random_event(&n_tiles, player->x, player->y, player->strength);
+      }
+      break;
+    case 'q':
+    case 'Q':
+      return;
+    default:
+      break;
     }
+
+    // Trigger Combat sequence correctly
     if (active_enemy.active && player->x == active_enemy.x &&
         player->y == active_enemy.y) {
+      clear_screen();
+      // TODO: Change text based on whether its player attacking or mob
+      printf(RED "%s " RESET "has attacked you!\n", active_enemy.template.name);
+      sleep_ms(
+          1500); // Gives player time to see notification before panel loads
+      clear_screen();
+
       in_fight(active_enemy.template.name, active_enemy.template.symbol,
-               active_enemy.current_hp, active_enemy.x, active_enemy.y,
+               &active_enemy.current_hp, active_enemy.x, active_enemy.y,
                player->strength);
     }
   }
 }
-
 // Sets initial structural values for player configuration profiles
 // TODO: READ FROM SAVE
 void game() {
@@ -286,7 +311,7 @@ void character_creation() {
   printf("Welcome, %s!\n", player1.name);
   fflush(stdout); // Instantly clears standard output buffer before starting
                   // game thread
-  sleep_ms(2000);
+  sleep_ms(1000);
 
   game();
 }
