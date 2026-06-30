@@ -1,11 +1,3 @@
-/*
- * borginal_ncurses.c
- * Compile: gcc borginal_ncurses.c -o borginal -lncurses
- *
- * All UI is centered on the terminal at runtime using LINES / COLS.
- * Resize the window and the layout follows automatically.
- */
-
 #include <ncurses.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,8 +13,8 @@
 #endif
 
 // --- CONSTANTS ---
-#define MAP_WIDTH 10
-#define MAP_HEIGHT 10
+#define MAP_WIDTH 2500
+#define MAP_HEIGHT 2500
 #define ENEMY_POOL_SIZE 3
 
 // ncurses color pair IDs
@@ -58,7 +50,7 @@ typedef struct {
 } EnemyTemplate;
 
 typedef struct {
-  EnemyTemplate templ; // "template" is a C++ keyword; renamed to avoid clashes
+  EnemyTemplate templ;
   int x, y;
   int current_hp;
   int active;
@@ -77,7 +69,6 @@ EnemyTemplate enemy_pool[ENEMY_POOL_SIZE] = {
 
 // --- UTILITY ---
 
-// Print a string centered horizontally at the given row.
 void mvprint_centered(int row, const char *str) {
   int col = (COLS - (int)strlen(str)) / 2;
   if (col < 0)
@@ -85,7 +76,6 @@ void mvprint_centered(int row, const char *str) {
   mvprintw(row, col, "%s", str);
 }
 
-// Print a colored string centered at the given row.
 void mvprint_centered_color(int row, int color_pair, const char *str) {
   int col = (COLS - (int)strlen(str)) / 2;
   if (col < 0)
@@ -95,7 +85,6 @@ void mvprint_centered_color(int row, int color_pair, const char *str) {
   attroff(COLOR_PAIR(color_pair));
 }
 
-// Draw a horizontal separator centered at row, 'width' chars wide.
 void draw_separator(int row, int width) {
   int col = (COLS - width) / 2;
   if (col < 0)
@@ -103,8 +92,6 @@ void draw_separator(int row, int width) {
   mvhline(row, col, '-', width);
 }
 
-// Build and print an HP bar string at (row, left_col).
-// Returns the column after the bar (for chaining).
 void draw_hp_bar(int row, int left_col, int current, int max) {
   int segments = (int)(((float)current / max) * BAR_WIDTH);
   if (segments < 0)
@@ -123,9 +110,6 @@ int calculate_enemy_damage(Enemy enemy) {
   return enemy.templ.dmg + enemy.templ.rank + enemy.templ.level + (rand() % 5);
 }
 
-// --- TIMED MESSAGE SCREEN ---
-
-// Clear screen, show a centered message, pause, then return.
 void show_message(const char *msg, int ms) {
   clear();
   mvprint_centered(LINES / 2, msg);
@@ -138,9 +122,8 @@ void show_message(const char *msg, int ms) {
 void in_fight(char *name, int *hp) {
   int max_hp = active_enemy.templ.hp;
 
-  // UI block is ~8 rows tall; center it vertically
   int block_h = 8;
-  int block_w = 30; // approximate width of the widest line
+  int block_w = 30;
   int start_row = (LINES - block_h) / 2;
   int left_col = (COLS - block_w) / 2;
 
@@ -151,7 +134,6 @@ void in_fight(char *name, int *hp) {
   while (1) {
     clear();
 
-    // --- Enemy header ---
     int row = start_row;
     snprintf(buf, sizeof(buf), "Enemy: %s", name);
     mvprint_centered_color(row++, COLOR_PAIR_RED, buf);
@@ -160,21 +142,18 @@ void in_fight(char *name, int *hp) {
 
     draw_separator(row++, block_w);
 
-    // --- Player header ---
     snprintf(buf, sizeof(buf), "Player: %s", player1.name);
     mvprint_centered_color(row++, COLOR_PAIR_GREEN, buf);
 
     draw_hp_bar(row++, left_col, player1.hp, player1.max_hp);
 
-    row++; // blank line
+    row++;
 
-    // --- Combat log ---
     mvprint_centered(row++, log_line1);
     mvprint_centered(row++, log_line2);
 
-    row++; // blank line
+    row++;
 
-    // --- Actions ---
     mvprint_centered_color(row++, COLOR_PAIR_YELLOW, "1. Attack    2. Run");
 
     refresh();
@@ -211,7 +190,6 @@ void in_fight(char *name, int *hp) {
       show_message("You ran away!", 1500);
       break;
     }
-    // Any other key: redraw loop (no-op)
   }
 }
 
@@ -228,28 +206,66 @@ void random_event(int player_x, int player_y) {
     active_enemy.current_hp = selected.hp;
     active_enemy.active = 1;
 
-    active_enemy.x = rand() % MAP_WIDTH;
-    active_enemy.y = rand() % MAP_HEIGHT;
+    // Fix: Spawn the enemy relative to the player's position (within a 10-tile
+    // radius)
+    active_enemy.x = player_x + (rand() % 9) - 4;
+    active_enemy.y = player_y + (rand() % 9) - 4;
+
+    // Keep spawn bounds safe within the map boundaries
+    if (active_enemy.x < 0)
+      active_enemy.x = 0;
+    if (active_enemy.x >= MAP_WIDTH)
+      active_enemy.x = MAP_WIDTH - 1;
+    if (active_enemy.y < 0)
+      active_enemy.y = 0;
+    if (active_enemy.y >= MAP_HEIGHT)
+      active_enemy.y = MAP_HEIGHT - 1;
 
     // Don't spawn on top of the player
     if (active_enemy.x == player_x && active_enemy.y == player_y)
       active_enemy.x = (player_x + 1) % MAP_WIDTH;
   }
 }
-
 // --- MAP / GAME LOOP ---
-// TODO: Expand map to zone-based 10k x 10k layout
-// TODO: Show player stats and XP bar in UI
+// Fix the camera to follow player correctly
 
 void map_loop(Character *player) {
-  // The map block is MAP_HEIGHT rows of cells (2 chars each) + 4 rows for HUD
-  // We center the whole block on screen.
-  int map_px_w = MAP_WIDTH * 2 - 1; // "P . . ..." — width in chars
-  int hud_rows = 3;                 // hp bar + blank + position line
-  int block_h = MAP_HEIGHT + hud_rows;
+  const int VIEW_WIDTH = 10;
+  const int VIEW_HEIGHT = 10;
+  const int HALF_W = VIEW_WIDTH / 2;
+  const int HALF_H = VIEW_HEIGHT / 2;
+  const int NUDGE_THRESHOLD = 3;
+
+  const int map_px_w = VIEW_WIDTH * 2 - 1;
+  const int hud_rows = 3;
+  const int block_h = VIEW_HEIGHT + hud_rows;
+
+  int cam_x = player->x - HALF_W;
+  int cam_y = player->y - HALF_H;
 
   while (1) {
-    // Recalculate center each frame to handle terminal resize
+    // --- Camera tracking ---
+    int delta_x = player->x - (cam_x + HALF_W);
+    int delta_y = player->y - (cam_y + HALF_H);
+
+    if (delta_x > NUDGE_THRESHOLD)
+      cam_x++;
+    if (delta_x < -NUDGE_THRESHOLD)
+      cam_x--;
+    if (delta_y > NUDGE_THRESHOLD)
+      cam_y++;
+    if (delta_y < -NUDGE_THRESHOLD)
+      cam_y--;
+
+    if (cam_x < 0)
+      cam_x = 0;
+    if (cam_y < 0)
+      cam_y = 0;
+    if (cam_x > MAP_WIDTH - VIEW_WIDTH)
+      cam_x = MAP_WIDTH - VIEW_WIDTH;
+    if (cam_y > MAP_HEIGHT - VIEW_HEIGHT)
+      cam_y = MAP_HEIGHT - VIEW_HEIGHT;
+
     int start_row = (LINES - block_h) / 2;
     int start_col = (COLS - map_px_w) / 2;
     if (start_row < 0)
@@ -257,22 +273,28 @@ void map_loop(Character *player) {
     if (start_col < 0)
       start_col = 0;
 
-    clear();
+    // erase() lets ncurses diff against the previous frame instead of
+    // forcing a full physical repaint on the next refresh() (which is
+    // what clear() does). Same visual result, far less flicker/cost.
+    erase();
 
-    // --- HUD: HP bar ---
-    draw_hp_bar(start_row, start_col, player1.hp, player1.max_hp);
+    draw_hp_bar(start_row, start_col, player->hp,
+                player->max_hp); // was player1 (bug)
 
     // --- Map grid ---
-    for (int y = MAP_HEIGHT - 1; y >= 0; y--) {
-      int row = start_row + 1 + (MAP_HEIGHT - 1 - y); // top-to-bottom render
-      for (int x = 0; x < MAP_WIDTH; x++) {
-        int col = start_col + x * 2;
-        if (x == player->x && y == player->y) {
+    for (int v_y = VIEW_HEIGHT - 1; v_y >= 0; v_y--) {
+      int row = start_row + 1 + (VIEW_HEIGHT - 1 - v_y);
+      int world_y = cam_y + v_y;
+      for (int v_x = 0; v_x < VIEW_WIDTH; v_x++) {
+        int col = start_col + v_x * 2;
+        int world_x = cam_x + v_x;
+
+        if (world_x == player->x && world_y == player->y) {
           attron(COLOR_PAIR(COLOR_PAIR_GREEN));
           mvaddch(row, col, 'P');
           attroff(COLOR_PAIR(COLOR_PAIR_GREEN));
-        } else if (active_enemy.active && x == active_enemy.x &&
-                   y == active_enemy.y) {
+        } else if (active_enemy.active && world_x == active_enemy.x &&
+                   world_y == active_enemy.y) {
           attron(COLOR_PAIR(COLOR_PAIR_RED));
           mvaddch(row, col, active_enemy.templ.symbol);
           attroff(COLOR_PAIR(COLOR_PAIR_RED));
@@ -283,46 +305,43 @@ void map_loop(Character *player) {
     }
 
     // --- Position line ---
-    char pos_buf[32];
-    snprintf(pos_buf, sizeof(pos_buf), "Pos: %d | %d  [WASD move, Q quit]",
-             player->x, player->y);
-    mvprintw(start_row + 1 + MAP_HEIGHT + 1, start_col, "%s", pos_buf);
+    mvprintw(start_row + 1 + VIEW_HEIGHT + 1, start_col,
+             "Pos: %d | %d  [WASD move, Q quit]", player->x, player->y);
 
     refresh();
 
     int input = getch();
-
-    // Handle terminal resize
     if (input == KEY_RESIZE)
       continue;
 
+    int moved = 0;
     switch (input) {
     case 'w':
     case 'W':
       if (player->y < MAP_HEIGHT - 1) {
         player->y++;
-        random_event(player->x, player->y);
+        moved = 1;
       }
       break;
     case 's':
     case 'S':
       if (player->y > 0) {
         player->y--;
-        random_event(player->x, player->y);
+        moved = 1;
       }
       break;
     case 'a':
     case 'A':
       if (player->x > 0) {
         player->x--;
-        random_event(player->x, player->y);
+        moved = 1;
       }
       break;
     case 'd':
     case 'D':
       if (player->x < MAP_WIDTH - 1) {
         player->x++;
-        random_event(player->x, player->y);
+        moved = 1;
       }
       break;
     case 'q':
@@ -332,21 +351,22 @@ void map_loop(Character *player) {
       break;
     }
 
-    // Trigger combat when player steps onto the enemy
-    if (active_enemy.active && player->x == active_enemy.x &&
-        player->y == active_enemy.y) {
-      // TODO: Vary message depending on who initiated combat
-      char buf[64];
-      snprintf(buf, sizeof(buf), "%s has attacked you!",
-               active_enemy.templ.name);
-      show_message(buf, 1500);
-      in_fight(active_enemy.templ.name, &active_enemy.current_hp);
+    if (moved) {
+      random_event(player->x, player->y);
+
+      if (active_enemy.active && player->x == active_enemy.x &&
+          player->y == active_enemy.y) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%s has attacked you!",
+                 active_enemy.templ.name);
+        show_message(buf, 1500);
+        in_fight(active_enemy.templ.name, &active_enemy.current_hp);
+      }
     }
   }
 }
 
 // --- INITIALIZATION ---
-// TODO: Load from save file
 
 void game() {
   player1.exp = 0;
@@ -369,11 +389,10 @@ void character_creation() {
   mvprint_centered(row, "=== Character Creation ===");
   mvprint_centered(row + 2, "Enter your name (max 24 chars):");
 
-  // Position cursor on the line below the prompt, centered
   int input_col = (COLS - 24) / 2;
   move(row + 3, input_col);
 
-  echo(); // show typed characters
+  echo();
   curs_set(1);
   getnstr(player1.name, 24);
   noecho();
@@ -390,10 +409,10 @@ void character_creation() {
 
 void init_ncurses() {
   initscr();
-  cbreak();             // raw input, no line buffering
-  noecho();             // don't echo keypresses
-  keypad(stdscr, TRUE); // enable arrow keys and KEY_RESIZE
-  curs_set(0);          // hide cursor during gameplay
+  cbreak();
+  noecho();
+  keypad(stdscr, TRUE);
+  curs_set(0);
 
   if (has_colors()) {
     start_color();
@@ -412,7 +431,6 @@ int main() {
   srand(time(NULL));
   init_ncurses();
 
-  // Main menu
   while (1) {
     clear();
     int row = LINES / 2 - 2;
